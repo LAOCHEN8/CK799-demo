@@ -1,0 +1,2060 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>CK799厨房秤交互原型</title>
+  <style>
+    body {
+      background: #f5f5f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      margin: 0;
+    }
+    .svg-container {
+      background: #fff;
+      box-shadow: 0 2px 16px rgba(0,0,0,0.08);
+      border-radius: 12px;
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .svg-raw {
+      width: 118.3mm;
+      height: 25mm;
+      max-width: 100vw;
+      max-height: 80vh;
+      display: block;
+    }
+    .svg-btn-hover {
+      filter: brightness(0.85);
+      transition: filter 0.2s;
+    }
+    .debug-buttons-container { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%); display: flex; flex-direction: row; gap: 16px; z-index: 9999; }
+    .debug-btn { width: 88px; height: 36px; background: #fff; border: 1.5px solid #bbb; border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 15px; color: #222; font-family: inherit; cursor: pointer; box-shadow: 0 2px 8px rgba(0,0,0,0.04); user-select: none; transition: box-shadow 0.2s; }
+    .debug-btn:active { box-shadow: 0 1px 2px rgba(0,0,0,0.08); background: #f2f2f2; }
+    .debug-input { width:80px;height:32px;font-size:15px;text-align:center;border:1.5px solid #bbb;border-radius:8px;outline:none; }
+  </style>
+</head>
+<body>
+  <div class="svg-container">
+    <object id="svgObj" data="CK799 SVG文件.svg" type="image/svg+xml" class="svg-raw"></object>
+  </div>
+  <div class="debug-buttons-container">
+    <button id="debug-lowbat-btn" class="debug-btn">模拟低电</button>
+    <button id="debug-overload-btn" class="debug-btn">模拟超载</button>
+    <button id="debug-bluetooth-btn" class="debug-btn">蓝牙连接</button>
+    <button id="debug-add-btn" class="debug-btn">增加重量</button>
+    <button id="debug-sub-btn" class="debug-btn">减少重量</button>
+    <input id="debug-weight-input" class="debug-input" type="number" step="0.1" min="-9999" max="99999" style="width:80px;height:32px;font-size:15px;text-align:center;border:1.5px solid #bbb;border-radius:8px;outline:none;" placeholder="输入重量" />
+  </div>
+  <script>
+
+    const units = [
+      {id: '_单位g', label: 'g'},
+      {id: '_单位ml', label: 'ml(water)'},
+      {id: '_单位ml', label: 'ml(milk)'},
+      {id: '_单位oz', label: 'oz'},
+      {id: '_单位lb:oz', label: 'lb:oz'},
+      {id: '_单位lb', label: 'lb'},
+      {id: '_单位fl_oz', label: "fl'oz(water)"},
+      {id: '_单位fl_oz', label: "fl'oz(milk)"},
+    ];
+    let currentUnitIndex = 0;
+    const DEFAULT_UNIT_INDEX = 0; // g单位
+    let powerOn = true; // 上电默认开机
+    let isFirstPowerOn = true; // 标记是否为上电开机
+    let svgDoc, displayGroup;
+    let dotMatrixMap = {}; // 新增：行列到rect的映射
+    let hiTimeout, zeroTimeout;
+    let bluetoothBlinkTimer = null;
+    let bluetoothIcon = null;
+    let tareIcon = null;
+    let isAnimating = false; // 動畫鎖
+    let lastUnitIndex = null; // 關機前保存的單位
+
+    // 新增：切換單位時先全部隱藏所有單位圖標
+    function hideAllUnitIcons() {
+      const allUnitIds = [
+        '_单位kg','_单位ml','_单位lb:oz','_单位fl_oz','_单位milk','_单位water','_单位oz','_单位L'
+      ];
+      allUnitIds.forEach(id => {
+        const el = svgDoc && svgDoc.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+    }
+
+    document.getElementById('svgObj').addEventListener('load', function() {
+      svgDoc = this.contentDocument;
+      displayGroup = svgDoc.getElementById('_屏幕显示内容');
+      bluetoothIcon = svgDoc.getElementById('_蓝牙图标');
+      tareIcon = svgDoc.getElementById('_去皮图标');
+      // 新增：自动扫描所有点阵rect，构建映射
+      dotMatrixMap = {};
+      const allRects = svgDoc.querySelectorAll('rect[id^="_点阵区域"]');
+      allRects.forEach(rect => {
+        const id = rect.id;
+        // 匹配 _点阵区域14行35列
+        const match = id.match(/_点阵区域(\d+)行(\d+)列/);
+        if(match) {
+          const row = parseInt(match[1],10);
+          const col = parseInt(match[2],10);
+          dotMatrixMap[`${row}-${col}`] = rect;
+        }
+      });
+
+      // 上电自动开机，显示内容
+      if(displayGroup) displayGroup.style.display = '';
+      powerOn = true;
+      currentUnitIndex = DEFAULT_UNIT_INDEX; // 强制g单位
+      isFirstPowerOn = true;
+      showAllContent(); // 只全显，不调用updateUnitDisplay/hideBluetoothIcon
+      // 2秒后显示HI
+      hiTimeout = setTimeout(() => {
+        centerExplosionAnimation(() => {
+          currentUnitIndex = DEFAULT_UNIT_INDEX; // HI阶段也强制g单位
+          updateUnitDisplay(); // 进入HI阶段前，先切换单位显示
+          showHI();
+          hideBluetoothIcon(); // HI阶段蓝牙图标隐藏
+          // 2秒后归零
+          zeroTimeout = setTimeout(() => {
+            currentUnitIndex = DEFAULT_UNIT_INDEX; // 0阶段也强制g单位
+            updateUnitDisplay(); // 进入0阶段前，确保单位显示正确
+            showZero();
+            startBluetoothBlink(); // 归零后蓝牙开始闪烁
+            if(svgDoc) {
+              const iconArea = svgDoc.getElementById('_图标区域');
+              if(iconArea) iconArea.style.display = '';
+            }
+            isAnimating = false;
+            refreshDebugWeight(); // 新增：確保數字顯示規則與單位同步
+          }, 2000);
+        });
+      }, 2000);
+
+      // 单位切换按钮（不切换g/kg）
+      const unitBtn = svgDoc.getElementById('_单位切换键');
+      const powerBtn = svgDoc.getElementById('_开关机_清零键');
+      const svgRoot = svgDoc.documentElement;
+      if(unitBtn && powerBtn && svgRoot) {
+        const unitBox = getGroupBBox(unitBtn);
+        const powerBox = getGroupBBox(powerBtn);
+        svgRoot.addEventListener('mousemove', function(e) {
+          const pt = svgDoc.documentElement.createSVGPoint();
+          pt.x = e.clientX;
+          pt.y = e.clientY;
+          const svgPt = pt.matrixTransform(svgDoc.documentElement.getScreenCTM().inverse());
+          if (inBox(svgPt, unitBox)) {
+            svgRoot.style.cursor = 'pointer';
+            unitBtn.style.filter = 'brightness(0.7)';
+            powerBtn.style.filter = '';
+          } else if (inBox(svgPt, powerBox)) {
+            svgRoot.style.cursor = 'pointer';
+            powerBtn.style.filter = 'brightness(0.7)';
+            unitBtn.style.filter = '';
+          } else {
+            svgRoot.style.cursor = 'default';
+            unitBtn.style.filter = '';
+            powerBtn.style.filter = '';
+          }
+        });
+        svgRoot.addEventListener('mouseleave', function() {
+          svgRoot.style.cursor = 'default';
+          unitBtn.style.filter = '';
+          powerBtn.style.filter = '';
+        });
+        svgRoot.addEventListener('click', function(e) {
+          if (isAnimating) return; // 動畫期間禁止操作
+          const pt = svgDoc.documentElement.createSVGPoint();
+          pt.x = e.clientX;
+          pt.y = e.clientY;
+          const svgPt = pt.matrixTransform(svgDoc.documentElement.getScreenCTM().inverse());
+          if (inBox(svgPt, unitBox)) {
+            if(!powerOn) return;
+            // 先全部隱藏所有單位圖標
+            hideAllUnitIcons();
+            // 只歸零後允許切換單位（g/kg自動切換，按鈕不切g/kg）
+            currentUnitIndex = (currentUnitIndex + 1) % units.length;
+            updateUnitDisplay();
+            refreshDebugWeight();
+          } else if (inBox(svgPt, powerBox)) {
+            // 新增：關機狀態下點擊可重新開機
+            if (!powerOn) {
+              isAnimating = true;
+              if(displayGroup) displayGroup.style.display = '';
+              powerOn = true;
+              isFirstPowerOn = true;
+              debugWeight = 0;
+              tareWeight = 0;
+              isTareActive = false;
+              // 新增：開機動畫前隱藏圖標區域
+              if(svgDoc) {
+                const iconArea = svgDoc.getElementById('_图标区域');
+                if(iconArea) iconArea.style.display = 'none';
+              }
+              // 恢復單位
+              if (lastUnitIndex !== null) {
+                currentUnitIndex = lastUnitIndex;
+              } else {
+                currentUnitIndex = DEFAULT_UNIT_INDEX;
+              }
+              showAllContent();
+              hiTimeout = setTimeout(() => {
+                centerExplosionAnimation(() => {
+                  updateUnitDisplay();
+                  showHI();
+                  hideBluetoothIcon();
+                  zeroTimeout = setTimeout(() => {
+                    updateUnitDisplay();
+                    showZero();
+                    startBluetoothBlink();
+                    if(svgDoc) {
+                      const iconArea = svgDoc.getElementById('_图标区域');
+                      if(iconArea) iconArea.style.display = '';
+                    }
+                    isAnimating = false;
+                    refreshDebugWeight(); // 新增：確保數字顯示規則與單位同步
+                  }, 2000);
+                });
+              }, 2000);
+              return;
+            }
+            // 只要顯示重量為0（不論去皮與否）都能關機
+            if (debugWeight === 0) {
+              isAnimating = true;
+              lastUnitIndex = currentUnitIndex;
+              powerOn = false;
+              clearTimeout(hiTimeout);
+              clearTimeout(zeroTimeout);
+              stopBluetoothBlink();
+              showAllContent();
+              setTimeout(() => {
+                showShutdownMeteor(() => {
+                  drawBYEExplosion(() => {
+                    setTimeout(() => {
+                      dissolveBYEExplosion(() => {
+                        if(displayGroup) displayGroup.style.display = 'none';
+                        isAnimating = false; // 動畫結束允許操作
+                      });
+                    }, 3000);
+                  });
+                });
+              }, 100);
+              return;
+            }
+            // 去皮/清零
+            let gross = debugWeight;
+            if (Math.abs(gross) >= 10) {
+              // 去皮
+              let newTare = tareWeight + gross;
+              if (Math.abs(newTare) > 15000) {
+                // 觸發超載動畫與關機
+                isAnimating = true;
+                clearTimeout(overloadTimeout);
+                clearDotMatrix();
+                showOverloadPattern();
+                overloadTimeout = setTimeout(() => {
+                  dissolveOverload(() => {
+                    if(displayGroup) displayGroup.style.display = 'none';
+                    powerOn = false;
+                    debugWeight = 0;
+                    refreshDebugWeight();
+                    isAnimating = false; // 動畫結束允許操作
+                  });
+                }, 5000);
+                return;
+              }
+              tareWeight = newTare;
+              debugWeight = 0;
+              isTareActive = true;
+              if (tareIcon) tareIcon.style.display = '';
+              refreshDebugWeight();
+            } else {
+              // 清零
+              debugWeight = 0;
+              refreshDebugWeight();
+            }
+          }
+        });
+      }
+    });
+
+    function inBox(pt, box) {
+      return pt.x >= box.x && pt.x <= box.x + box.width && pt.y >= box.y && pt.y <= box.y + box.height;
+    }
+
+    // 获取分组内所有图形元素的联合最大包围盒
+    function getGroupBBox(group) {
+      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+      const elements = group.querySelectorAll('rect,polygon,path,ellipse,circle');
+      elements.forEach(el => {
+        if(typeof el.getBBox === 'function') {
+          const box = el.getBBox();
+          if(box.x < minX) minX = box.x;
+          if(box.y < minY) minY = box.y;
+          if(box.x + box.width > maxX) maxX = box.x + box.width;
+          if(box.y + box.height > maxY) maxY = box.y + box.height;
+        }
+      });
+      if(minX === Infinity) return {x:0, y:0, width:0, height:0};
+      return {x: minX, y: minY, width: maxX - minX, height: maxY - minY};
+    }
+
+    // 2. updateUnitDisplay不再有L分支
+    function updateUnitDisplay() {
+      if(!svgDoc) return;
+      // 先隱藏所有單位分組
+      const allUnitIds = ['_单位kg','_单位ml','_单位lb:oz','_单位fl_oz','_单位milk','_单位water','_单位oz'];
+      allUnitIds.forEach(id => {
+        const el = svgDoc.getElementById(id);
+        if(el) el.style.display = 'none';
+      });
+      // 其它單位按currentUnitIndex切換
+      const cur = units[currentUnitIndex];
+      if(cur.label === 'g') {
+        // g/kg自動切換由showWeightOnDotMatrix控制
+        const kgGroup = svgDoc.getElementById('_单位kg');
+        const g = svgDoc.getElementById('_单位g');
+        const k = svgDoc.getElementById('_单位k');
+        if (kgGroup) kgGroup.style.display = '';
+        if (g) g.style.display = '';
+        if (k) k.style.display = 'none';
+      } else if(cur.label === 'ml(water)') {
+        const ml = svgDoc.getElementById('_单位ml');
+        if(ml) ml.style.display = '';
+        const water = svgDoc.getElementById('_单位water');
+        if(water) water.style.display = '';
+        // ml單位下L圖標隱藏，由showWeightOnDotMatrix控制
+        const l = svgDoc.getElementById('_单位L');
+        if(l) l.style.display = 'none';
+      } else if(cur.label === 'ml(milk)') {
+        const ml = svgDoc.getElementById('_单位ml');
+        if(ml) ml.style.display = '';
+        const milk = svgDoc.getElementById('_单位milk');
+        if(milk) milk.style.display = '';
+        // ml單位下L圖標隱藏，由showWeightOnDotMatrix控制
+        const l = svgDoc.getElementById('_单位L');
+        if(l) l.style.display = 'none';
+      } else if(cur.label === 'lb:oz') {
+        const lbOz = svgDoc.getElementById('_单位lb:oz');
+        if(lbOz) {
+          lbOz.style.display = '';
+          Array.from(lbOz.children).forEach(child => {
+            child.style.display = '';
+          });
+        }
+      } else if(cur.label === 'oz') {
+        // 单独oz
+        const lbOz = svgDoc.getElementById('_单位lb:oz');
+        if(lbOz) {
+          lbOz.style.display = '';
+          Array.from(lbOz.children).forEach(child => {
+            if(child.id === '_单位oz') {
+              child.style.display = '';
+            } else {
+              child.style.display = 'none';
+            }
+          });
+        }
+      } else if(cur.label === "fl'oz(water)") {
+        const fl = svgDoc.getElementById('_单位fl_oz');
+        if(fl) fl.style.display = '';
+        const water = svgDoc.getElementById('_单位water');
+        if(water) water.style.display = '';
+      } else if(cur.label === "fl'oz(milk)") {
+        const fl = svgDoc.getElementById('_单位fl_oz');
+        if(fl) fl.style.display = '';
+        const milk = svgDoc.getElementById('_单位milk');
+        if(milk) milk.style.display = '';
+      } else if(cur.label === "fl'oz") {
+        const fl = svgDoc.getElementById('_单位fl_oz');
+        if(fl) fl.style.display = '';
+      } else if(cur.label === 'lb') {
+        const lbOz = svgDoc.getElementById('_单位lb:oz');
+        if(lbOz) {
+          lbOz.style.display = '';
+          Array.from(lbOz.children).forEach(child => {
+            if(child.id === '_单位lb') {
+              child.style.display = '';
+            } else {
+              child.style.display = 'none';
+            }
+          });
+        }
+      }
+    }
+
+    // 显示所有内容（点阵全亮）
+    function showAllContent() {
+      if(displayGroup) displayGroup.style.display = '';
+      // 点阵区域全部显示（不隐藏任何rect）
+      Object.values(dotMatrixMap).forEach(rect => {
+        rect.style.opacity = '';
+      });
+      // 全显时蓝牙图标常亮
+      if(bluetoothIcon) bluetoothIcon.style.display = '';
+    }
+
+    // HI点阵图案（14行35列，'.'为灭，'#'为亮）
+    const hiPattern = [
+      "..........###...###...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "..........###...###................".split(""),
+      "..........###...###................".split(""),
+      "..........#########...###..........".split(""),
+      "..........#########...###..........".split(""),
+      "..........#########...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "..........###...###...###..........".split(""),
+      "...................................".split("")
+    ];
+
+    function showPattern(pattern) {
+      for(let row=0; row<pattern.length; row++) {
+        for(let col=0; col<pattern[row].length; col++) {
+          setDot(row+1, col+1, pattern[row][col] === "#"); // 修正：col+1
+        }
+      }
+    }
+
+    // 点阵显示HI
+    function showHI() {
+      Object.values(dotMatrixMap).forEach(rect => {
+        rect.style.opacity = '0.08';
+      });
+      // 批量点亮HI
+      showPattern(hiPattern);
+      // 图标区域全灭
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+    }
+
+    // 点阵显示0
+    function showZero() {
+      Object.values(dotMatrixMap).forEach(rect => {
+        rect.style.opacity = '0.08';
+      });
+      // 使用数字模板显示0
+      showNumberPattern('0');
+      // 归零后只显示g单位，蓝牙图标只由闪烁函数控制
+      if(svgDoc) {
+        // g/kg嵌套分组显示修正
+        const kgGroup = svgDoc.getElementById('_单位kg');
+        const g = svgDoc.getElementById('_单位g');
+        const k = svgDoc.getElementById('_单位k');
+        if (kgGroup) kgGroup.style.display = '';
+        if (g) g.style.display = '';
+        if (k) k.style.display = 'none';
+        // 其它单位全部隐藏
+        const allUnitIds = ['_单位ml','_单位lb:oz','_单位fl_oz','_单位milk','_单位water','_单位L'];
+        allUnitIds.forEach(id => {
+          const el = svgDoc.getElementById(id);
+          if(el) el.style.display = 'none';
+        });
+        // 图标区域分组本身显示
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) {
+          iconArea.style.display = '';
+          Array.from(iconArea.children).forEach(child => {
+            if(child.id === '_单位g') {
+              child.style.display = '';
+            } else if(child.id !== '_蓝牙图标') {
+              child.style.display = 'none';
+            }
+            // _蓝牙图标不动，交给闪烁函数控制
+          });
+        }
+      }
+      // 蓝牙图标闪烁
+      startBluetoothBlink();
+      // 保证单位显示状态
+      updateUnitDisplay();
+    }
+
+    // 点亮/熄灭某个点阵（行1-14，列1-35）
+    function setDot(row,col,on) {
+      if(row<1||row>14||col<1||col>35) return;
+      const rect = dotMatrixMap[`${row}-${col}`];
+      if(rect) rect.style.opacity = on ? '' : '0.08';
+    }
+
+    // 蓝牙图标闪烁
+    function startBluetoothBlink() {
+      stopBluetoothBlink();
+      if(!bluetoothIcon) return;
+      let visible = true;
+      bluetoothIcon.style.display = '';
+      bluetoothBlinkTimer = setInterval(() => {
+        visible = !visible;
+        bluetoothIcon.style.display = visible ? '' : 'none';
+      }, 500);
+    }
+    function stopBluetoothBlink() {
+      if(bluetoothBlinkTimer) clearInterval(bluetoothBlinkTimer);
+      bluetoothBlinkTimer = null;
+      if(bluetoothIcon) bluetoothIcon.style.display = '';
+    }
+    // 隐藏蓝牙图标（不影响全显时）
+    function hideBluetoothIcon() {
+      stopBluetoothBlink();
+      if(bluetoothIcon) bluetoothIcon.style.display = 'none';
+    }
+
+    // 关机瀑布流星动画（美学流星雨：头部高亮、拖尾渐变、速度错落）
+    function showShutdownMeteor(callback) {
+      // 关机动画前隐藏图标区域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      Object.values(dotMatrixMap).forEach(rect => {
+        rect.style.opacity = '';
+        rect.style.transition = 'opacity 0.18s';
+        rect.style.boxShadow = '';
+        rect.style.background = '';
+      });
+      const rows = 14; // 点阵行数
+      const cols = 35; // 点阵列数
+      let finishedCols = 0;
+      for(let c=0; c<cols; c++) {
+        const startDelay = Math.random() * 200;
+        const speed = 30 + Math.random() * 30;
+        const tailLen = 2 + Math.floor(Math.random() * 3); // 2~4
+        setTimeout(() => {
+          let head = 0;
+          function next() {
+            // 拖尾渐变
+            for(let t=0; t<=tailLen; t++) {
+              const r = head - t;
+              if(r >= 0 && r < rows) {
+                // 反向：从上往下，r+1行
+                const rect = dotMatrixMap[`${r+1}-${c+1}`];
+                if(rect) {
+                  if(t === 0) {
+                    rect.style.opacity = '1';
+                    rect.style.background = 'linear-gradient(to bottom,#fff,#aef)';
+                    rect.style.boxShadow = '0 0 6px #fff,0 0 12px #4fc3f7';
+                  } else if(t === 1) {
+                    rect.style.opacity = '0.5';
+                    rect.style.background = '';
+                    rect.style.boxShadow = '';
+                  } else {
+                    rect.style.opacity = '0.18';
+                    rect.style.background = '';
+                    rect.style.boxShadow = '';
+                  }
+                }
+              }
+            }
+            // 尾部彻底熄灭
+            const tail = head - tailLen - 1;
+            if(tail >= 0 && tail < rows) {
+              const rect = dotMatrixMap[`${tail+1}-${c+1}`];
+              if(rect) {
+                rect.style.opacity = '0.08';
+                rect.style.background = '';
+                rect.style.boxShadow = '';
+              }
+            }
+            head++;
+            if(head < rows + tailLen + 1) {
+              setTimeout(next, speed);
+            } else {
+              // 全部熄灭
+              for(let r=0; r<rows; r++) {
+                const rect = dotMatrixMap[`${r+1}-${c+1}`];
+                if(rect) {
+                  rect.style.opacity = '0.08';
+                  rect.style.background = '';
+                  rect.style.boxShadow = '';
+                }
+              }
+              finishedCols++;
+              if(finishedCols === cols && callback) callback();
+            }
+          }
+          next();
+        }, startDelay);
+      }
+    }
+
+    // BYE字样点阵（14x35）
+    const byePattern = [
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,1,1,1,1,1,1,1,0,0,0,1,1,0,0,0,0,1,1,0,0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,1,1,1,0,0,1,1,0,0,0,0,1,1,0,0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,0,0,0,0,0,0,1,1,0,0,1,1,0,0,0,0,1,1,0,0,1,1,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,0,0,0,0,0,0,1,1,0,0,1,1,1,0,0,1,1,1,0,0,1,1,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,0,0,0,0,0,0,1,1,0,0,0,1,1,1,1,1,1,0,0,0,1,1,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0,1,1,1,1,0,0,0,0,1,1,1,1,1,1,1,1,0,0,0],
+      [0,0,1,1,0,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,0,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,0,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,1,1,0,0,0,0,0,0,0,0,0],
+      [0,0,1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,1,1,0,0,0,0,0,1,1,1,1,1,1,1,1,1,0,0],
+      [0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+    ];
+    // 计算BYE点到四周的最小距离
+    const byePoints = [];
+    const byeExplodeSteps = [];
+    for(let r=0; r<14; r++) {
+      for(let c=0; c<35; c++) {
+        if(byePattern[r][c]) {
+          byePoints.push({ r, c });
+          const dist = Math.min(r, 13 - r, c, 34 - c);
+          byeExplodeSteps.push(dist);
+        }
+      }
+    }
+    function drawBYEExplosion(callback) {
+      // 动画前隐藏图标区域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      Object.values(dotMatrixMap).forEach(rect => {
+        rect.style.opacity = '0.08';
+      });
+      let maxStep = Math.max(...byeExplodeSteps);
+      let step = 0;
+      function frame() {
+        for(let i=0; i<byePoints.length; i++) {
+          if(byeExplodeSteps[i] === step) {
+            setDot(byePoints[i].r+1, byePoints[i].c+1, true);
+          }
+        }
+        step++;
+        if(step <= maxStep) {
+          setTimeout(frame, 60);
+        } else {
+          callback && callback();
+        }
+      }
+      frame();
+    }
+    function dissolveBYEExplosion(callback) {
+      // 动画前隐藏图标区域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      let maxStep = Math.max(...byeExplodeSteps);
+      let step = 0;
+      function frame() {
+        let currentStep = maxStep - step;
+        for(let i=0; i<byePoints.length; i++) {
+          if(byeExplodeSteps[i] === currentStep) {
+            setDot(byePoints[i].r+1, byePoints[i].c+1, false);
+          }
+        }
+        step++;
+        if(step <= maxStep) {
+          setTimeout(frame, 120); // 让BYE消失动画变慢
+        } else {
+          Object.values(dotMatrixMap).forEach(rect => {
+            rect.style.opacity = '0.08';
+          });
+          callback && callback();
+        }
+      }
+      frame();
+    }
+
+    // 1. 在<script>内合适位置添加centerExplosionAnimation函数
+    function centerExplosionAnimation(callback) {
+      // 开机动画前隐藏图标区域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      const rows = 14; // 点阵行数
+      const cols = 35; // 点阵列数
+      const centerR = (rows - 1) / 2;
+      const centerC = (cols - 1) / 2;
+      // 计算每个点到中心的距离
+      let maxDist = 0;
+      const dists = [];
+      for (let r = 0; r < rows; r++) {
+        dists[r] = [];
+        for (let c = 0; c < cols; c++) {
+          const dist = Math.sqrt((r - centerR) ** 2 + (c - centerC) ** 2);
+          dists[r][c] = dist;
+          if (dist > maxDist) maxDist = dist;
+        }
+      }
+      let step = 0;
+      const totalSteps = Math.ceil(maxDist) + 1;
+      // 先全部点亮
+      for(let r=0;r<rows;r++) for(let c=0;c<cols;c++) setDot(r+1,c+1,true);
+      function frame() {
+        for (let r = 0; r < rows; r++) {
+          for (let c = 0; c < cols; c++) {
+            if (dists[r][c] >= maxDist - step) setDot(r+1, c+1, false);
+          }
+        }
+        step++;
+        if (step < totalSteps) {
+          setTimeout(frame, 60); // 保持慢速
+        } else {
+          setTimeout(()=>{
+            // 动画结束后恢复图标区域显示
+            if(svgDoc) {
+              const iconArea = svgDoc.getElementById('_图标区域');
+              if(iconArea) iconArea.style.display = '';
+            }
+            callback && callback();
+          }, 200); // 稍作停留
+        }
+      }
+      frame();
+    }
+
+    // 主数字6x14，小数3x10，小数点1x2
+    const digitPatterns = {
+      '0': [
+        '######',
+        '######',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '######',
+        '######'
+      ],
+      '1': [
+        '  ##  ',
+        ' ###  ',
+        ' ###  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        '  ##  ',
+        ' #### ',
+        ' #### '
+      ],
+      '2': [
+        '######',
+        '######',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '######',
+        '######',
+        '##    ',
+        '##    ',
+        '##    ',
+        '##    ',
+        '######',
+        '######'
+      ],
+      '3': [
+        '######',
+        '######',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '######',
+        '######',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '######',
+        '######'
+      ],
+      '4': [
+        '## ## ',
+        '## ## ',
+        '## ## ',
+        '## ## ',
+        '## ## ',
+        '## ## ',
+        '######',
+        '######',
+        '   ## ',
+        '   ## ',
+        '   ## ',
+        '   ## ',
+        '   ## ',
+        '   ## '
+      ],
+      '5': [
+        '######',
+        '######',
+        '##    ',
+        '##    ',
+        '##    ',
+        '##    ',
+        '######',
+        '######',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '######',
+        '######'
+      ],
+      '6': [
+        '######',
+        '######',
+        '##    ',
+        '##    ',
+        '##    ',
+        '##    ',
+        '######',
+        '######',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '######',
+        '######'
+      ],
+      '7': [
+        '######',
+        '######',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+      ],
+      '8': [
+        '######',
+        '######',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '######',
+        '######',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '######',
+        '######'
+      ],
+      '9': [
+        '######',
+        '######',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '##  ##',
+        '######',
+        '######',
+        '    ##',
+        '    ##',
+        '    ##',
+        '    ##',
+        '######',
+        '######'
+      ],
+      '-': [
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        ' #### ',
+        ' #### ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      '
+      ],
+      '.': [
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        ' ',
+        '##'
+      ],
+      ' ': [
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      ',
+        '      '
+      ]
+    };
+    // 1. 在smallDigitPatterns中添加冒號':'的點陣
+    const smallDigitPatterns = {
+      '0': [
+        '###',
+        '###',
+        '# #',
+        '# #',
+        '# #',
+        '# #',
+        '# #',
+        '# #',
+        '###',
+        '###'
+      ],
+      '1': [
+        ' # ',
+        '## ',
+        ' # ',
+        ' # ',
+        ' # ',
+        ' # ',
+        ' # ',
+        ' # ',
+        ' # ',
+        '###'
+      ],
+      '2': [
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '###',
+        '###',
+        '#  ',
+        '#  ',
+        '###',
+        '###'
+      ],
+      '3': [
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '###',
+        '###'
+      ],
+      '4': [
+        '# #',
+        '# #',
+        '# #',
+        '# #',
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '  #',
+        '  #'
+      ],
+      '5': [
+        '###',
+        '###',
+        '#  ',
+        '#  ',
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '###',
+        '###'
+      ],
+      '6': [
+        '###',
+        '###',
+        '#  ',
+        '#  ',
+        '###',
+        '###',
+        '# #',
+        '# #',
+        '###',
+        '###'
+      ],
+      '7': [
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '  #',
+        '  #',
+        '  #',
+        '  #',
+        '  #',
+        '  #'
+      ],
+      '8': [
+        '###',
+        '###',
+        '# #',
+        '# #',
+        '###',
+        '###',
+        '# #',
+        '# #',
+        '###',
+        '###'
+      ],
+      '9': [
+        '###',
+        '###',
+        '# #',
+        '# #',
+        '###',
+        '###',
+        '  #',
+        '  #',
+        '###',
+        '###'
+      ],
+      ':': [
+        '   ',
+        ' # ',
+        ' # ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        ' # ',
+        ' # ',
+        '   '
+      ],
+      '.': [
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        ' # ',
+        ' # '
+      ],
+      ' ': [
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   ',
+        '   '
+      ]
+    };
+    // 小数点1x2
+    const smallDotPattern = [
+      ' ',
+      '#'
+    ];
+
+    // 1. 添加Over Load字模（14x35）
+    const overloadPattern = [
+      " ######  ##    ## ######## ######  ",
+      "##    ## ##    ## ##       ##    ##",
+      "##    ## ##    ## ##       ##    ##",
+      "##    ## ##    ## ######## ######  ",
+      "##    ##  ##  ##  ##       ##  ##  ",
+      "##    ##  ##  ##  ##       ##   ## ",
+      " ######     ##    ######## ##    ##",
+      "                                   ",
+      "##        ######     ##    ######  ",
+      "##       ##    ##   ####   ##   ## ",
+      "##       ##    ##  ##  ##  ##    ##",
+      "##       ##    ## ######## ##    ##",
+      "##       ##    ## ##    ## ##   ## ",
+      "########  ######  ##    ## ######  "
+    ];
+
+    // 顯示超載字模
+    function showOverloadPattern() {
+      // 熄滅圖標區域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      for(let row=0; row<overloadPattern.length; row++) {
+        for(let col=0; col<overloadPattern[row].length && col<35; col++) {
+          setDot(row+1, col+1, overloadPattern[row][col] === '#');
+        }
+      }
+    }
+
+    // 2. 超載自動顯示與關機
+    let overloadTimeout = null;
+    function checkOverload(weight) {
+      // 嚴格大於15000才超載，等於15000不超載
+      if (Math.abs(weight) > 10100 || (Math.abs(tareWeight + debugWeight) > 15000)) {
+        isAnimating = true;
+        clearTimeout(overloadTimeout);
+        clearDotMatrix();
+        showOverloadPattern();
+        // 5秒後動畫消散並息屏
+        overloadTimeout = setTimeout(() => {
+          dissolveOverload(() => {
+            // 息屏關機
+            if(displayGroup) displayGroup.style.display = 'none';
+            powerOn = false;
+            debugWeight = 0;
+            refreshDebugWeight();
+            isAnimating = false; // 動畫結束允許操作
+          });
+        }, 5000);
+        return true;
+      }
+      return false;
+    }
+    // 超載消散動畫
+    function dissolveOverload(callback) {
+      // 雜亂隨機消散所有亮點
+      // 1. 收集所有亮點座標
+      const points = [];
+      for(let r=0; r<overloadPattern.length; r++) {
+        for(let c=0; c<overloadPattern[r].length && c<35; c++) {
+          if(overloadPattern[r][c] === '#') {
+            points.push([r+1, c+1]);
+          }
+        }
+      }
+      // 2. 打亂順序
+      for(let i=points.length-1; i>0; i--) {
+        const j = Math.floor(Math.random() * (i+1));
+        [points[i], points[j]] = [points[j], points[i]];
+      }
+      // 3. 分批熄滅
+      let idx = 0;
+      const batch = 6; // 每批熄滅點數
+      function frame() {
+        for(let i=0; i<batch && idx<points.length; i++, idx++) {
+          const [r, c] = points[idx];
+          setDot(r, c, false);
+        }
+        if(idx < points.length) {
+          setTimeout(frame, 30);
+        } else {
+          // 恢復圖標區域
+          if(svgDoc) {
+            const iconArea = svgDoc.getElementById('_图标区域');
+            if(iconArea) iconArea.style.display = '';
+          }
+          callback && callback();
+        }
+      }
+      frame();
+    }
+
+    // 清空点阵区域
+    function clearDotMatrix() {
+      Object.values(dotMatrixMap).forEach(rect => {
+        rect.style.opacity = '0.08';
+      });
+    }
+
+    // 優化：所有單位下只要有小數點，小數點後三位都用小字模顯示
+    // 2. showNumberPattern支持lb:oz格式，lb:後的所有字符都用小字模
+    function showNumberPattern(str, isDecimal) {
+      clearDotMatrix();
+      const digitWidth = 6, digitHeight = 14, spacing = 1;
+      const smallWidth = 3, smallHeight = 10, smallSpacing = 1;
+      const dotWidth = 1, dotHeight = 2;
+      // lb:oz格式特判
+      if (/^-?\d+:/.test(str)) {
+        // 解析負號
+        let negative = false;
+        if (str.startsWith('-')) {
+          negative = true;
+          str = str.slice(1);
+        }
+        let [lbStr, ozStr] = str.split(':');
+        // ozStr格式：兩位整數+小數點+一位小數
+        // oz部分寬度
+        const ozWidth = smallWidth //冒號
+          + smallWidth //十位
+          + smallSpacing //間隔
+          + smallWidth //個位
+          + smallWidth //小數點
+          + smallWidth; //小數位
+        const ozEndCol = 35;
+        const ozStartCol = ozEndCol - ozWidth + 1;
+        // lb部分寬度
+        let lbWidth = (negative ? digitWidth : 0) + lbStr.length * digitWidth + (lbStr.length - 1) * spacing;
+        const lbStartCol = ozStartCol - lbWidth;
+        const startRow = 1;
+        // 負號（大字模）
+        let curCol = lbStartCol;
+        if (negative) {
+          const minusPattern = digitPatterns['-'];
+          for(let r=0; r<digitHeight; r++) {
+            for(let c=0; c<digitWidth; c++) {
+              if(minusPattern[r][c] === '#') {
+                setDot(startRow + r, curCol + c, true);
+              }
+            }
+          }
+          curCol += digitWidth; // 無間隔
+        }
+        // lb部分（大字模）
+        for(let i=0; i<lbStr.length; i++) {
+          const ch = lbStr[i];
+          const pattern = digitPatterns[ch] || digitPatterns[' '];
+          for(let r=0; r<digitHeight; r++) {
+            for(let c=0; c<digitWidth; c++) {
+              if(pattern[r][c] === '#') {
+                setDot(startRow + r, curCol + i * (digitWidth + spacing) + c, true);
+              }
+            }
+          }
+        }
+        // oz部分（十位+間隔+個位+小數點+小數位，個位-小數點-小數位緊貼）
+        let smallCol = ozStartCol;
+        // 冒號
+        let colonPattern = smallDigitPatterns[':'] || smallDigitPatterns[' '];
+        for(let r=0; r<smallHeight; r++) {
+          for(let c=0; c<smallWidth; c++) {
+            if(colonPattern[r][c] === '#') {
+              setDot(startRow + digitHeight - smallHeight + r, smallCol + c, true);
+            }
+          }
+        }
+        // 十位
+        let ch0 = ozStr[0];
+        let pattern0 = smallDigitPatterns[ch0] || smallDigitPatterns[' '];
+        for(let r=0; r<smallHeight; r++) {
+          for(let c=0; c<smallWidth; c++) {
+            if(pattern0[r][c] === '#') {
+              setDot(startRow + digitHeight - smallHeight + r, smallCol + smallWidth + c, true);
+            }
+          }
+        }
+        // 個位（有間隔）
+        let ch1 = ozStr[1];
+        let pattern1 = smallDigitPatterns[ch1] || smallDigitPatterns[' '];
+        for(let r=0; r<smallHeight; r++) {
+          for(let c=0; c<smallWidth; c++) {
+            if(pattern1[r][c] === '#') {
+              setDot(startRow + digitHeight - smallHeight + r, smallCol + 2 * smallWidth + smallSpacing + c, true);
+            }
+          }
+        }
+        // 小數點（緊貼個位）
+        let dotPattern = smallDigitPatterns['.'] || smallDigitPatterns[' '];
+        for(let r=0; r<smallHeight; r++) {
+          for(let c=0; c<smallWidth; c++) {
+            if(dotPattern[r][c] === '#') {
+              setDot(startRow + digitHeight - smallHeight + r, smallCol + 3 * smallWidth + smallSpacing + c, true);
+            }
+          }
+        }
+        // 小數位（緊貼小數點）
+        let ch2 = ozStr[3];
+        let pattern2 = smallDigitPatterns[ch2] || smallDigitPatterns[' '];
+        for(let r=0; r<smallHeight; r++) {
+          for(let c=0; c<smallWidth; c++) {
+            if(pattern2[r][c] === '#') {
+              setDot(startRow + digitHeight - smallHeight + r, smallCol + 3 * smallWidth + smallSpacing + smallWidth + c, true);
+            }
+          }
+        }
+        return;
+      }
+      // 其餘單位原邏輯
+      // 判斷是否有小數點
+      const hasDot = str.includes('.');
+      let intStr = str, fracStr = '';
+      let negative = false;
+      if (intStr.startsWith('-')) {
+        negative = true;
+        intStr = intStr.slice(1);
+      }
+      if (hasDot) {
+        [intStr, fracStr] = intStr.split('.');
+        fracStr = fracStr.slice(0, 3);
+      }
+      // 主數字（大字模）右對齊
+      let minusWidth = negative ? digitWidth : 0;
+      let totalWidth = minusWidth + intStr.length * digitWidth + (intStr.length - 1) * spacing;
+      if (hasDot) {
+        totalWidth += dotWidth + 1 + fracStr.length * smallWidth + (fracStr.length > 0 ? (fracStr.length - 1) * smallSpacing : 0);
+      }
+      const endCol = 35;
+      const startCol = endCol - totalWidth + 1 - (hasDot ? 1 : 0);
+      const startRow = 1;
+      // 負號（大字模）
+      let curCol = startCol;
+      if (negative) {
+        const minusPattern = digitPatterns['-'];
+        for(let r=0; r<digitHeight; r++) {
+          for(let c=0; c<digitWidth; c++) {
+            if(minusPattern[r][c] === '#') {
+              setDot(startRow + r, curCol + c, true);
+            }
+          }
+        }
+        curCol += digitWidth; // 無間隔
+      }
+      // 主數字
+      for(let i=0; i<intStr.length; i++) {
+        const ch = intStr[i];
+        const pattern = digitPatterns[ch] || digitPatterns[' '];
+        for(let r=0; r<digitHeight; r++) {
+          for(let c=0; c<digitWidth; c++) {
+            if(pattern[r][c] === '#') {
+              setDot(startRow + r, curCol + i * (digitWidth + spacing) + c, true);
+            }
+          }
+        }
+      }
+      if (hasDot) {
+        // 小數點
+        let dotCol = curCol + intStr.length * (digitWidth + spacing);
+        setDot(startRow + digitHeight - 2, dotCol, true);
+        setDot(startRow + digitHeight - 1, dotCol, true);
+        // 小數部分（小字模）
+        let fracCol = dotCol + 2;
+        for(let j=0; j<fracStr.length; j++) {
+          let ch = fracStr[j];
+          let pattern = smallDigitPatterns[ch] || smallDigitPatterns[' '];
+          for(let r=0; r<smallHeight; r++) {
+            for(let c=0; c<smallWidth; c++) {
+              if(pattern[r][c] === '#') {
+                setDot(startRow + digitHeight - smallHeight + r, fracCol + j * (smallWidth + smallSpacing) + c, true);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    // showWeightOnDotMatrix自動判斷傳遞isDecimal
+    function showWeightOnDotMatrix(weight) {
+      if (checkOverload(weight)) return;
+      let showValue = '', showUnit = '';
+      const cur = units[currentUnitIndex];
+      const isNegative = weight < 0;
+      if (cur.label === 'g') {
+        if (Math.abs(weight) >= 1000) {
+          showValue = (Math.abs(weight) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'kg';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = '';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(weight)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'g';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'ml(water)') {
+        const mlValue = gToMlWater(weight) * (weight < 0 ? -1 : 1);
+        const ml = svgDoc && svgDoc.getElementById('_单位ml');
+        const l = svgDoc && svgDoc.getElementById('_单位L');
+        const water = svgDoc && svgDoc.getElementById('_单位water');
+        const milk = svgDoc && svgDoc.getElementById('_单位milk');
+        lastMlType = 'ml(water)';
+        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
+          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'L';
+          if (ml) ml.style.display = 'none';
+          if (l) l.style.display = '';
+          if (water) water.style.display = '';
+          if (milk) milk.style.display = 'none';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(mlValue)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'ml';
+          if (ml) ml.style.display = '';
+          if (l) l.style.display = 'none';
+          if (water) water.style.display = '';
+          if (milk) milk.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'ml(milk)') {
+        const mlValue = gToMlMilk(weight) * (weight < 0 ? -1 : 1);
+        const ml = svgDoc && svgDoc.getElementById('_单位ml');
+        const l = svgDoc && svgDoc.getElementById('_单位L');
+        const water = svgDoc && svgDoc.getElementById('_单位water');
+        const milk = svgDoc && svgDoc.getElementById('_单位milk');
+        lastMlType = 'ml(milk)';
+        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
+          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'L';
+          if (ml) ml.style.display = 'none';
+          if (l) l.style.display = '';
+          if (milk) milk.style.display = '';
+          if (water) water.style.display = 'none';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(mlValue)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'ml';
+          if (ml) ml.style.display = '';
+          if (l) l.style.display = 'none';
+          if (milk) milk.style.display = '';
+          if (water) water.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'oz') {
+        showValue = gToOz(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'oz';
+        showNumberPattern(showValue, showValue.includes('.'));
+      } else if (cur.label === 'lb:oz') {
+        const { lb, oz } = gToLbOz(weight);
+        showValue = `${lb}:${oz}`;
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'lb:oz';
+        showNumberPattern(showValue, String(oz).includes('.'));
+      } else if (cur.label === 'lb') {
+        showValue = gToLb(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'lb';
+        showNumberPattern(showValue, showValue.includes('.'));
+      } else if (cur.label === "fl'oz(water)") {
+        showValue = gToFlOzWater(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = "fl'oz";
+        showNumberPattern(showValue, showValue.includes('.'));
+      } else if (cur.label === "fl'oz(milk)") {
+        showValue = gToFlOzMilk(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = "fl'oz";
+        showNumberPattern(showValue, showValue.includes('.'));
+      }
+      if (isTareActive) {
+        weight -= tareWeight;
+        if (tareIcon) tareIcon.style.display = '';
+      } else {
+        if (tareIcon) tareIcon.style.display = 'none';
+      }
+    }
+
+    // 单位换算函数
+    function gToMlWater(g) {
+      return Math.round(Math.abs(g));
+    }
+    function gToMlMilk(g) {
+      return Math.round(Math.abs(g) * 63634 / 65535);
+    }
+    function gToOz(g) {
+      // 1g = 0.035273962oz，MCU用35274/1000000
+      let raw = Math.abs(g) * 35274 / 1000000;
+      // 取小數第2位
+      let intPart = Math.floor(raw);
+      let d2 = Math.floor(raw * 100) % 10; // 小數第2位
+      let d3 = Math.floor(raw * 1000) % 10; // 小數第3位
+      let oz;
+      if (d2 <= 2) {
+        // 二舍三入
+        oz = Math.floor(raw * 10) / 10;
+      } else if (d2 >= 8) {
+        // 七舍八入
+        oz = Math.ceil(raw * 10) / 10;
+      } else {
+        // 其它情況，四捨五入到0.05
+        oz = Math.round(raw * 20) / 20;
+      }
+      return oz.toFixed(2); // 保留兩位小數，不去0
+    }
+    function gToLbOz(g) {
+      let totalOz = Math.abs(g) * 35274 / 1000000;
+      let lb = Math.floor(totalOz / 16);
+      let oz = totalOz - lb * 16;
+      oz = Math.round(oz * 10) / 10; // 只保留1位小數
+      if (oz >= 16) { lb += 1; oz = 0; }
+      // 格式化oz為兩位整數+小數點+一位小數
+      let ozInt = Math.floor(oz);
+      let ozDec = Math.round((oz - ozInt) * 10);
+      let ozStr = `${ozInt}`.padStart(2, '0') + '.' + ozDec;
+      return { lb, oz: ozStr };
+    }
+    function gToLb(g) {
+      // MCU算法：lb = (g * 22046) / 10000
+      let lb = Math.abs(g) * 22046 / 10000;
+      lb = Math.round(lb * 1000) / 1000 / 1000;
+      return lb.toFixed(2); // 保留兩位小數
+    }
+    function gToL(g) {
+      // 1L = 1000g，直接除以1000
+      return (Math.abs(g) / 1000).toFixed(2);
+    }
+    function gToFlOzWater(g) {
+      let val = Math.floor((Math.abs(g) * 23117 + 32768) / 65535);
+      return (val / 10).toFixed(1); // 始終保留1位小數
+    }
+    function gToFlOzMilk(g) {
+      let val = Math.floor((Math.abs(g) * 22446 + 32768) / 65535);
+      return (val / 10).toFixed(1); // 始終保留1位小數
+    }
+
+    // 儲存上一次ml類型（'ml(water)' 或 'ml(milk)'）
+    let lastMlType = null;
+
+    // 3. showWeightOnDotMatrix自動ml/L顯示，L不再作為單獨單位循環
+    function showWeightOnDotMatrix(weight) {
+      if (checkOverload(weight)) return;
+      let showValue = '', showUnit = '';
+      const cur = units[currentUnitIndex];
+      const isNegative = weight < 0;
+      if (cur.label === 'g') {
+        if (Math.abs(weight) >= 1000) {
+          showValue = (Math.abs(weight) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'kg';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = '';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(weight)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'g';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'ml(water)') {
+        const mlValue = gToMlWater(weight) * (weight < 0 ? -1 : 1);
+        const ml = svgDoc && svgDoc.getElementById('_单位ml');
+        const l = svgDoc && svgDoc.getElementById('_单位L');
+        const water = svgDoc && svgDoc.getElementById('_单位water');
+        const milk = svgDoc && svgDoc.getElementById('_单位milk');
+        lastMlType = 'ml(water)';
+        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
+          // 顯示L+water
+          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'L';
+          if (ml) ml.style.display = 'none';
+          if (l) l.style.display = '';
+          if (water) water.style.display = '';
+          if (milk) milk.style.display = 'none';
+          showNumberPattern(showValue, true);
+        } else {
+          // 顯示ml+water
+          showValue = Math.round(Math.abs(mlValue)).toString();
+          if (isNegative) showValue = '-' + showValue;
+        showUnit = 'ml';
+          if (ml) ml.style.display = '';
+          if (l) l.style.display = 'none';
+          if (water) water.style.display = '';
+          if (milk) milk.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'ml(milk)') {
+        const mlValue = gToMlMilk(weight) * (weight < 0 ? -1 : 1);
+        const ml = svgDoc && svgDoc.getElementById('_单位ml');
+        const l = svgDoc && svgDoc.getElementById('_单位L');
+        const water = svgDoc && svgDoc.getElementById('_单位water');
+        const milk = svgDoc && svgDoc.getElementById('_单位milk');
+        lastMlType = 'ml(milk)';
+        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
+          // 顯示L+milk
+          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'L';
+          if (ml) ml.style.display = 'none';
+          if (l) l.style.display = '';
+          if (milk) milk.style.display = '';
+          if (water) water.style.display = 'none';
+          showNumberPattern(showValue, true);
+        } else {
+          // 顯示ml+milk
+          showValue = Math.round(Math.abs(mlValue)).toString();
+          if (isNegative) showValue = '-' + showValue;
+        showUnit = 'ml';
+          if (ml) ml.style.display = '';
+          if (l) l.style.display = 'none';
+          if (milk) milk.style.display = '';
+          if (water) water.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'oz') {
+        showValue = gToOz(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'oz';
+        showNumberPattern(showValue.toString(), showValue.includes('.'));
+      } else if (cur.label === 'lb:oz') {
+        const { lb, oz } = gToLbOz(weight);
+        showValue = `${lb}:${oz}`;
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'lb:oz';
+        showNumberPattern(showValue, String(oz).includes('.'));
+      } else if (cur.label === 'lb') {
+        showValue = gToLb(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'lb';
+        showNumberPattern(showValue.toString(), showValue.includes('.'));
+      } else if (cur.label === "fl'oz(water)") {
+        showValue = gToFlOzWater(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = "fl'oz";
+        showNumberPattern(showValue.toString(), showValue.includes('.'));
+      } else if (cur.label === "fl'oz(milk)") {
+        showValue = gToFlOzMilk(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = "fl'oz";
+        showNumberPattern(showValue.toString(), showValue.includes('.'));
+      }
+      if (isTareActive) {
+        weight -= tareWeight;
+        if (tareIcon) tareIcon.style.display = '';
+      } else {
+        if (tareIcon) tareIcon.style.display = 'none';
+      }
+    }
+
+    // 工具函數：去除多餘的0和小數點
+    function trimTrailingZeros(numStr) {
+      // 只保留必要的小數位，不補0
+      return numStr.replace(/(\.\d*?[1-9])0+$/, '$1').replace(/\.0+$/, '').replace(/(\.\d{1,3})\d*$/, '$1');
+    }
+
+    // 调试按钮逻辑
+    let debugWeight = 0;
+    function refreshDebugWeight() {
+      showWeightOnDotMatrix(debugWeight);
+    }
+    document.addEventListener('DOMContentLoaded', function() {
+      // 调试按钮事件
+      const lowbatBtn = document.getElementById('debug-lowbat-btn');
+      const overloadBtn = document.getElementById('debug-overload-btn');
+      const bluetoothBtn = document.getElementById('debug-bluetooth-btn');
+      const addBtn = document.getElementById('debug-add-btn');
+      const subBtn = document.getElementById('debug-sub-btn');
+      const input = document.getElementById('debug-weight-input');
+      let bluetoothConnected = false;
+      function setBluetoothState(connected) {
+        bluetoothConnected = connected;
+        if (bluetoothConnected) {
+          stopBluetoothBlink();
+          if (bluetoothIcon) bluetoothIcon.style.display = '';
+          if (bluetoothBtn) bluetoothBtn.textContent = '断开连接';
+        } else {
+          startBluetoothBlink();
+          if (bluetoothBtn) bluetoothBtn.textContent = '蓝牙连接';
+        }
+      }
+      if (bluetoothBtn) {
+        bluetoothBtn.addEventListener('click', function() {
+          if (isAnimating) return;
+          setBluetoothState(!bluetoothConnected);
+        });
+      }
+      if (overloadBtn) {
+        overloadBtn.addEventListener('click', function() {
+          if (isAnimating) return;
+          isAnimating = true;
+          clearTimeout(overloadTimeout);
+          clearDotMatrix();
+          showOverloadPattern();
+          overloadTimeout = setTimeout(() => {
+            dissolveOverload(() => {
+              if(displayGroup) displayGroup.style.display = 'none';
+              powerOn = false;
+              debugWeight = 0;
+              refreshDebugWeight();
+              isAnimating = false;
+            });
+          }, 5000);
+        });
+      }
+      // 页面加载时蓝牙默认为断开（闪烁）
+      setBluetoothState(false);
+      if(addBtn && subBtn && input) {
+        let addTimer = null, addInterval = null, addStartTime = null;
+        let subTimer = null, subInterval = null, subStartTime = null;
+        addBtn.addEventListener('mousedown', function() {
+          if (isAnimating) return;
+          addStartTime = Date.now();
+          addTimer = setTimeout(() => {
+            addInterval = setInterval(() => {
+              let duration = Date.now() - addStartTime;
+              let step = 1;
+              if (duration > 3000) step = 100;
+              else if (duration > 2000) step = 50;
+              else if (duration > 1000) step = 10;
+              debugWeight += step;
+              refreshDebugWeight();
+            }, 50);
+          }, 400);
+        });
+        addBtn.addEventListener('mouseup', function() {
+          if (isAnimating) return;
+          if (addTimer) {
+            clearTimeout(addTimer);
+            addTimer = null;
+            if (!addInterval) {
+              debugWeight += 1;
+              refreshDebugWeight();
+            }
+          }
+          if (addInterval) {
+            clearInterval(addInterval);
+            addInterval = null;
+          }
+        });
+        addBtn.addEventListener('mouseleave', function() {
+          if (addTimer) { clearTimeout(addTimer); addTimer = null; }
+          if (addInterval) { clearInterval(addInterval); addInterval = null; }
+        });
+        subBtn.addEventListener('mousedown', function() {
+          if (isAnimating) return;
+          subStartTime = Date.now();
+          subTimer = setTimeout(() => {
+            subInterval = setInterval(() => {
+              let duration = Date.now() - subStartTime;
+              let step = 1;
+              if (duration > 3000) step = 100;
+              else if (duration > 2000) step = 50;
+              else if (duration > 1000) step = 10;
+              debugWeight -= step;
+              refreshDebugWeight();
+            }, 50);
+          }, 400);
+        });
+        subBtn.addEventListener('mouseup', function() {
+          if (isAnimating) return;
+          if (subTimer) {
+            clearTimeout(subTimer);
+            subTimer = null;
+            if (!subInterval) {
+              debugWeight -= 1;
+              refreshDebugWeight();
+            }
+          }
+          if (subInterval) {
+            clearInterval(subInterval);
+            subInterval = null;
+          }
+        });
+        subBtn.addEventListener('mouseleave', function() {
+          if (subTimer) { clearTimeout(subTimer); subTimer = null; }
+          if (subInterval) { clearInterval(subInterval); subInterval = null; }
+        });
+        addBtn.addEventListener('click', function() {
+          if (isAnimating) return;
+        });
+        subBtn.addEventListener('click', function() {
+          if (isAnimating) return;
+        });
+        input.addEventListener('keydown', function(e) {
+          if (isAnimating) return;
+          if(e.key === 'Enter') {
+            let val = parseFloat(input.value);
+            if(!isNaN(val)) {
+              debugWeight = val;
+              refreshDebugWeight();
+            }
+            input.value = '';
+          }
+        });
+      }
+      // 页面加载时显示0
+      refreshDebugWeight();
+      if (lowbatBtn) {
+        let lowbatPressTimer = null;
+        lowbatBtn.addEventListener('mousedown', function() {
+          if (isAnimating) return;
+          lowbatPressTimer = setTimeout(() => { lowbatPressTimer = null; }, 500);
+        });
+        lowbatBtn.addEventListener('mouseup', function() {
+          if (isAnimating) return;
+          if(lowbatPressTimer !== null) {
+            clearTimeout(lowbatPressTimer);
+            triggerLowBatteryShutdown();
+          }
+        });
+        lowbatBtn.addEventListener('mouseleave', function() {
+          if (lowbatPressTimer !== null) {
+            clearTimeout(lowbatPressTimer);
+          }
+        });
+      }
+    });
+
+    // 低電池點陣圖案
+    const lowBatteryPattern = [
+      "################################   ",
+      "###################################",
+      "####                           ####",
+      "####        ##      ##         ####",
+      "####         ##    ##          ####",
+      "####          ##  ##           ####",
+      "####           ####            ####",
+      "####           ####            ####",
+      "####          ##  ##           ####",
+      "####         ##    ##          ####",
+      "####        ##      ##         ####",
+      "####                           ####",
+      "###################################",
+      "################################   "
+    ];
+    // 顯示低電池圖案
+    function showLowBatteryPattern() {
+      // 熄滅圖標區域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      for(let row=0; row<lowBatteryPattern.length; row++) {
+        for(let col=0; col<lowBatteryPattern[row].length && col<35; col++) {
+          setDot(row+1, col+1, lowBatteryPattern[row][col] === '#');
+        }
+      }
+    }
+    // 低電自動關機動畫
+    function triggerLowBatteryShutdown() {
+      isAnimating = true;
+      clearDotMatrix();
+      let blinkCount = 0;
+      const maxBlinks = 5;
+      let isOn = true;
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      function blink() {
+        if (isOn) {
+          showLowBatteryPattern();
+          isOn = false;
+          setTimeout(blink, 1000);
+        } else {
+          clearDotMatrix();
+          blinkCount++;
+          if (blinkCount < maxBlinks) {
+            isOn = true;
+            setTimeout(blink, 500);
+          } else {
+            showLowBatteryPattern();
+            setTimeout(() => {
+              const points = [];
+              for(let r=0; r<lowBatteryPattern.length; r++) {
+                for(let c=0; c<lowBatteryPattern[r].length && c<35; c++) {
+                  if(lowBatteryPattern[r][c] === '#') {
+                    points.push([r+1, c+1]);
+                  }
+                }
+              }
+              for(let i=points.length-1; i>0; i--) {
+                const j = Math.floor(Math.random() * (i+1));
+                [points[i], points[j]] = [points[j], points[i]];
+              }
+              let idx = 0;
+              const batch = 6;
+              function frame() {
+                for(let i=0; i<batch && idx<points.length; i++, idx++) {
+                  const [r, c] = points[idx];
+                  setDot(r, c, false);
+                }
+                if(idx < points.length) {
+                  setTimeout(frame, 30);
+                } else {
+                  if(svgDoc) {
+                    const iconArea = svgDoc.getElementById('_图标区域');
+                    if(iconArea) iconArea.style.display = '';
+                  }
+                  if(displayGroup) displayGroup.style.display = 'none';
+                  powerOn = false;
+                  debugWeight = 0;
+                  refreshDebugWeight();
+                  isAnimating = false; // 動畫結束允許操作
+                  lastUnitIndex = currentUnitIndex;
+                }
+              }
+              frame();
+            }, 2000);
+          }
+        }
+      }
+      blink();
+    }
+
+    let tareWeight = 0;
+    let isTareActive = false;
+
+    // 在showWeightOnDotMatrix最後加去皮補償與圖標顯示
+    function showWeightOnDotMatrix(weight) {
+      if (checkOverload(weight)) return;
+      let showValue = '', showUnit = '';
+      const cur = units[currentUnitIndex];
+      const isNegative = weight < 0;
+      if (cur.label === 'g') {
+        if (Math.abs(weight) >= 1000) {
+          showValue = (Math.abs(weight) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'kg';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = '';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(weight)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'g';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'ml(water)') {
+        const mlValue = gToMlWater(weight) * (weight < 0 ? -1 : 1);
+        const ml = svgDoc && svgDoc.getElementById('_单位ml');
+        const l = svgDoc && svgDoc.getElementById('_单位L');
+        const water = svgDoc && svgDoc.getElementById('_单位water');
+        const milk = svgDoc && svgDoc.getElementById('_单位milk');
+        lastMlType = 'ml(water)';
+        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
+          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'L';
+          if (ml) ml.style.display = 'none';
+          if (l) l.style.display = '';
+          if (water) water.style.display = '';
+          if (milk) milk.style.display = 'none';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(mlValue)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'ml';
+          if (ml) ml.style.display = '';
+          if (l) l.style.display = 'none';
+          if (water) water.style.display = '';
+          if (milk) milk.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'ml(milk)') {
+        const mlValue = gToMlMilk(weight) * (weight < 0 ? -1 : 1);
+        const ml = svgDoc && svgDoc.getElementById('_单位ml');
+        const l = svgDoc && svgDoc.getElementById('_单位L');
+        const water = svgDoc && svgDoc.getElementById('_单位water');
+        const milk = svgDoc && svgDoc.getElementById('_单位milk');
+        lastMlType = 'ml(milk)';
+        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
+          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'L';
+          if (ml) ml.style.display = 'none';
+          if (l) l.style.display = '';
+          if (milk) milk.style.display = '';
+          if (water) water.style.display = 'none';
+          showNumberPattern(showValue, true);
+        } else {
+          showValue = Math.round(Math.abs(mlValue)).toString();
+          if (isNegative) showValue = '-' + showValue;
+          showUnit = 'ml';
+          if (ml) ml.style.display = '';
+          if (l) l.style.display = 'none';
+          if (milk) milk.style.display = '';
+          if (water) water.style.display = 'none';
+          showNumberPattern(showValue, false);
+        }
+      } else if (cur.label === 'oz') {
+        showValue = gToOz(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'oz';
+        showNumberPattern(showValue, showValue.includes('.'));
+      } else if (cur.label === 'lb:oz') {
+        const { lb, oz } = gToLbOz(weight);
+        showValue = `${lb}:${oz}`;
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'lb:oz';
+        showNumberPattern(showValue, String(oz).includes('.'));
+      } else if (cur.label === 'lb') {
+        showValue = gToLb(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = 'lb';
+        showNumberPattern(showValue, showValue.includes('.'));
+      } else if (cur.label === "fl'oz(water)") {
+        showValue = gToFlOzWater(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = "fl'oz";
+        showNumberPattern(showValue, showValue.includes('.'));
+      } else if (cur.label === "fl'oz(milk)") {
+        showValue = gToFlOzMilk(weight);
+        if (isNegative) showValue = '-' + showValue;
+        showUnit = "fl'oz";
+        showNumberPattern(showValue, showValue.includes('.'));
+      }
+      if (isTareActive) {
+        weight -= tareWeight;
+        if (tareIcon) tareIcon.style.display = '';
+      } else {
+        if (tareIcon) tareIcon.style.display = 'none';
+      }
+    }
+  </script>
+</body>
+</html> 
