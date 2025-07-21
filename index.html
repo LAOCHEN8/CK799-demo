@@ -1892,11 +1892,7 @@
     }
     // 新增：显示抓零过程图案
     function showZeroingPattern() {
-      // 熄灭图标区域
-      if(svgDoc) {
-        const iconArea = svgDoc.getElementById('_图标区域');
-        if(iconArea) iconArea.style.display = 'none';
-      }
+      // 不再隐藏图标区域
       for(let row=0; row<zeroingPattern.length; row++) {
         for(let col=0; col<zeroingPattern[row].length && col<35; col++) {
           setDot(row+1, col+1, zeroingPattern[row][col] === '#');
