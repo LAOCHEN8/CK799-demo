@@ -266,15 +266,19 @@
                 }, 5000);
                 return;
               }
-              tareWeight = newTare;
-              debugWeight = 0;
-              isTareActive = true;
-              if (tareIcon) tareIcon.style.display = '';
-              refreshDebugWeight();
+              playZeroingAnimation(() => {
+                tareWeight = newTare;
+                debugWeight = 0;
+                isTareActive = true;
+                if (tareIcon) tareIcon.style.display = '';
+                refreshDebugWeight();
+              });
             } else {
               // 清零
-              debugWeight = 0;
-              refreshDebugWeight();
+              playZeroingAnimation(() => {
+                debugWeight = 0;
+                refreshDebugWeight();
+              });
             }
           }
         });
@@ -1841,20 +1845,37 @@
 
     // 低電池點陣圖案
     const lowBatteryPattern = [
-      "################################   ",
-      "###################################",
-      "####                           ####",
-      "####        ##      ##         ####",
-      "####         ##    ##          ####",
-      "####          ##  ##           ####",
-      "####           ####            ####",
-      "####           ####            ####",
-      "####          ##  ##           ####",
-      "####         ##    ##          ####",
-      "####        ##      ##         ####",
-      "####                           ####",
-      "###################################",
-      "################################   "
+      "                                   ",
+      "      ####################         ",
+      "      #######################      ",
+      "      ####               ####      ",
+      "      ####   ##    ##    ####      ",
+      "      ####    ##  ##     ####      ",
+      "      ####      ##       ####      ",
+      "      ####      ##       ####      ",
+      "      ####    ##  ##     ####      ",
+      "      ####   ##    ##    ####      ",
+      "      ####               ####      ",
+      "      #######################      ",
+      "      ####################         ",
+      "                                   "
+    ];
+    // 新增：抓零过程点阵图案
+    const zeroingPattern = [
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      " ###### ###### ###### ###### ######",
+      " ###### ###### ###### ###### ######",
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      "                                   ",
+      "                                   "
     ];
     // 顯示低電池圖案
     function showLowBatteryPattern() {
@@ -1868,6 +1889,31 @@
           setDot(row+1, col+1, lowBatteryPattern[row][col] === '#');
         }
       }
+    }
+    // 新增：显示抓零过程图案
+    function showZeroingPattern() {
+      // 熄灭图标区域
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      for(let row=0; row<zeroingPattern.length; row++) {
+        for(let col=0; col<zeroingPattern[row].length && col<35; col++) {
+          setDot(row+1, col+1, zeroingPattern[row][col] === '#');
+        }
+      }
+    }
+    // 新增：抓零动画+回调
+    function playZeroingAnimation(callback) {
+      showZeroingPattern();
+      setTimeout(() => {
+        // 恢复图标区域显示
+        if(svgDoc) {
+          const iconArea = svgDoc.getElementById('_图标区域');
+          if(iconArea) iconArea.style.display = '';
+        }
+        if (typeof callback === 'function') callback();
+      }, 2000);
     }
     // 低電自動關機動畫
     function triggerLowBatteryShutdown() {
