@@ -43,6 +43,7 @@
     <object id="svgObj" data="CK799 SVG文件.svg" type="image/svg+xml" class="svg-raw"></object>
   </div>
   <div class="debug-buttons-container">
+    <button id="debug-unstable-btn" class="debug-btn">开机不稳</button>
     <button id="debug-lowbat-btn" class="debug-btn">模拟低电</button>
     <button id="debug-overload-btn" class="debug-btn">模拟超载</button>
     <button id="debug-bluetooth-btn" class="debug-btn">蓝牙连接</button>
@@ -1687,6 +1688,7 @@
     }
     document.addEventListener('DOMContentLoaded', function() {
       // 调试按钮事件
+      const unstableBtn = document.getElementById('debug-unstable-btn');
       const lowbatBtn = document.getElementById('debug-lowbat-btn');
       const overloadBtn = document.getElementById('debug-overload-btn');
       const bluetoothBtn = document.getElementById('debug-bluetooth-btn');
@@ -1841,6 +1843,29 @@
           }
         });
       }
+      if (unstableBtn) {
+        unstableBtn.addEventListener('click', function() {
+          if (isAnimating) return;
+          isAnimating = true;
+          clearDotMatrix();
+          if(svgDoc) {
+            const iconArea = svgDoc.getElementById('_图标区域');
+            if(iconArea) iconArea.style.display = 'none';
+          }
+          showUnstablePattern();
+          setTimeout(() => {
+            clearDotMatrix();
+            if(svgDoc) {
+              const iconArea = svgDoc.getElementById('_图标区域');
+              if(iconArea) iconArea.style.display = '';
+            }
+            if(displayGroup) displayGroup.style.display = 'none';
+            powerOn = false;
+            debugWeight = 0;
+            isAnimating = false;
+          }, 5000);
+        });
+      }
     });
 
     // 低電池點陣圖案
@@ -1860,7 +1885,7 @@
       "      ####################         ",
       "                                   "
     ];
-    // 新增：抓零过程点阵图案
+    // 抓零过程点阵图案
     const zeroingPattern = [
       "                                   ",
       "                                   ",
@@ -2095,6 +2120,36 @@
         if (tareIcon) tareIcon.style.display = '';
       } else {
         if (tareIcon) tareIcon.style.display = 'none';
+      }
+    }
+
+    // 开机不稳点阵图案（14x35，显示UNST）
+    const unstablePattern = [
+      "                                   ",
+      "##    ## ##    ## ######## ########",
+      "##    ## ##    ## ######## ########",
+      "##    ## ###   ## ##          ##   ", 
+      "##    ## ####  ## ##          ##   ",
+      "##    ## ####  ## ##          ##   ",
+      "##    ## ## ## ## ########    ##   ",
+      "##    ## ## ## ## ########    ##   ",
+      "##    ## ##  ####       ##    ##   ",      
+      "##    ## ##  ####       ##    ##   ",
+      "##    ## ##   ###       ##    ##   ",
+      "######## ##    ## ########    ##   ",
+      " ######  ##    ## ########    ##   ",
+      "                                   "
+    ];
+    // 显示开机不稳图案
+    function showUnstablePattern() {
+      if(svgDoc) {
+        const iconArea = svgDoc.getElementById('_图标区域');
+        if(iconArea) iconArea.style.display = 'none';
+      }
+      for(let row=0; row<unstablePattern.length; row++) {
+        for(let col=0; col<unstablePattern[row].length && col<35; col++) {
+          setDot(row+1, col+1, unstablePattern[row][col] === '#');
+        }
       }
     }
   </script>
