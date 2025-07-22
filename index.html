@@ -250,7 +250,7 @@
             if (Math.abs(gross) >= 10) {
               // 去皮
               let newTare = tareWeight + gross;
-              if (Math.abs(newTare) > 15000) {
+              if (Math.abs(newTare) > 14000) {
                 // 觸發超載動畫與關機
                 isAnimating = true;
                 clearTimeout(overloadTimeout);
@@ -1134,8 +1134,8 @@
     // 2. 超載自動顯示與關機
     let overloadTimeout = null;
     function checkOverload(weight) {
-      // 嚴格大於15000才超載，等於15000不超載
-      if (Math.abs(weight) > 10100 || (Math.abs(tareWeight + debugWeight) > 15000)) {
+      // 嚴格大於14000才超載，等於14000不超載
+      if (Math.abs(weight) > 10100 || (Math.abs(tareWeight + debugWeight) > 14000)) {
         isAnimating = true;
         clearTimeout(overloadTimeout);
         clearDotMatrix();
@@ -1373,305 +1373,6 @@
             }
           }
         }
-      }
-    }
-
-    // showWeightOnDotMatrix自動判斷傳遞isDecimal
-    function showWeightOnDotMatrix(weight) {
-      if (checkOverload(weight)) return;
-      let showValue = '', showUnit = '';
-      const cur = units[currentUnitIndex];
-      const isNegative = weight < 0;
-      if (cur.label === 'g') {
-        if (Math.abs(weight) >= 1000) {
-          showValue = (Math.abs(weight) / 1000).toFixed(3);
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'kg';
-          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
-          const g = svgDoc && svgDoc.getElementById('_单位g');
-          const k = svgDoc && svgDoc.getElementById('_单位k');
-          if (kgGroup) kgGroup.style.display = '';
-          if (g) g.style.display = '';
-          if (k) k.style.display = '';
-          showNumberPattern(showValue, true);
-        } else {
-          showValue = Math.round(Math.abs(weight)).toString();
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'g';
-          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
-          const g = svgDoc && svgDoc.getElementById('_单位g');
-          const k = svgDoc && svgDoc.getElementById('_单位k');
-          if (kgGroup) kgGroup.style.display = '';
-          if (g) g.style.display = '';
-          if (k) k.style.display = 'none';
-          showNumberPattern(showValue, false);
-        }
-      } else if (cur.label === 'ml(water)') {
-        const mlValue = gToMlWater(weight) * (weight < 0 ? -1 : 1);
-        const ml = svgDoc && svgDoc.getElementById('_单位ml');
-        const l = svgDoc && svgDoc.getElementById('_单位L');
-        const water = svgDoc && svgDoc.getElementById('_单位water');
-        const milk = svgDoc && svgDoc.getElementById('_单位milk');
-        lastMlType = 'ml(water)';
-        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
-          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'L';
-          if (ml) ml.style.display = 'none';
-          if (l) l.style.display = '';
-          if (water) water.style.display = '';
-          if (milk) milk.style.display = 'none';
-          showNumberPattern(showValue, true);
-        } else {
-          showValue = Math.round(Math.abs(mlValue)).toString();
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'ml';
-          if (ml) ml.style.display = '';
-          if (l) l.style.display = 'none';
-          if (water) water.style.display = '';
-          if (milk) milk.style.display = 'none';
-          showNumberPattern(showValue, false);
-        }
-      } else if (cur.label === 'ml(milk)') {
-        const mlValue = gToMlMilk(weight) * (weight < 0 ? -1 : 1);
-        const ml = svgDoc && svgDoc.getElementById('_单位ml');
-        const l = svgDoc && svgDoc.getElementById('_单位L');
-        const water = svgDoc && svgDoc.getElementById('_单位water');
-        const milk = svgDoc && svgDoc.getElementById('_单位milk');
-        lastMlType = 'ml(milk)';
-        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
-          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'L';
-          if (ml) ml.style.display = 'none';
-          if (l) l.style.display = '';
-          if (milk) milk.style.display = '';
-          if (water) water.style.display = 'none';
-          showNumberPattern(showValue, true);
-        } else {
-          showValue = Math.round(Math.abs(mlValue)).toString();
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'ml';
-          if (ml) ml.style.display = '';
-          if (l) l.style.display = 'none';
-          if (milk) milk.style.display = '';
-          if (water) water.style.display = 'none';
-          showNumberPattern(showValue, false);
-        }
-      } else if (cur.label === 'oz') {
-        showValue = gToOz(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = 'oz';
-        showNumberPattern(showValue, showValue.includes('.'));
-      } else if (cur.label === 'lb:oz') {
-        const { lb, oz } = gToLbOz(weight);
-        showValue = `${lb}:${oz}`;
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = 'lb:oz';
-        showNumberPattern(showValue, String(oz).includes('.'));
-      } else if (cur.label === 'lb') {
-        showValue = gToLb(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = 'lb';
-        showNumberPattern(showValue, showValue.includes('.'));
-      } else if (cur.label === "fl'oz(water)") {
-        showValue = gToFlOzWater(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = "fl'oz";
-        showNumberPattern(showValue, showValue.includes('.'));
-      } else if (cur.label === "fl'oz(milk)") {
-        showValue = gToFlOzMilk(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = "fl'oz";
-        showNumberPattern(showValue, showValue.includes('.'));
-      }
-      if (isTareActive) {
-        weight -= tareWeight;
-        if (tareIcon) tareIcon.style.display = '';
-      } else {
-        if (tareIcon) tareIcon.style.display = 'none';
-      }
-    }
-
-    // 单位换算函数
-    function gToMlWater(g) {
-      return Math.round(Math.abs(g));
-    }
-    function gToMlMilk(g) {
-      return Math.round(Math.abs(g) * 63634 / 65535);
-    }
-    function gToOz(g) {
-      // 1g = 0.035273962oz，MCU用35274/1000000
-      let raw = Math.abs(g) * 35274 / 1000000;
-      // 取小數第2位
-      let intPart = Math.floor(raw);
-      let d2 = Math.floor(raw * 100) % 10; // 小數第2位
-      let d3 = Math.floor(raw * 1000) % 10; // 小數第3位
-      let oz;
-      if (d2 <= 2) {
-        // 二舍三入
-        oz = Math.floor(raw * 10) / 10;
-      } else if (d2 >= 8) {
-        // 七舍八入
-        oz = Math.ceil(raw * 10) / 10;
-      } else {
-        // 其它情況，四捨五入到0.05
-        oz = Math.round(raw * 20) / 20;
-      }
-      return oz.toFixed(2); // 保留兩位小數，不去0
-    }
-    function gToLbOz(g) {
-      let totalOz = Math.abs(g) * 35274 / 1000000;
-      let lb = Math.floor(totalOz / 16);
-      let oz = totalOz - lb * 16;
-      oz = Math.round(oz * 10) / 10; // 只保留1位小數
-      if (oz >= 16) { lb += 1; oz = 0; }
-      // 格式化oz為兩位整數+小數點+一位小數
-      let ozInt = Math.floor(oz);
-      let ozDec = Math.round((oz - ozInt) * 10);
-      let ozStr = `${ozInt}`.padStart(2, '0') + '.' + ozDec;
-      return { lb, oz: ozStr };
-    }
-    function gToLb(g) {
-      // MCU算法：lb = (g * 22046) / 10000
-      let lb = Math.abs(g) * 22046 / 10000;
-      lb = Math.round(lb * 1000) / 1000 / 1000;
-      return lb.toFixed(2); // 保留兩位小數
-    }
-    function gToL(g) {
-      // 1L = 1000g，直接除以1000
-      return (Math.abs(g) / 1000).toFixed(2);
-    }
-    function gToFlOzWater(g) {
-      let val = Math.floor((Math.abs(g) * 23117 + 32768) / 65535);
-      return (val / 10).toFixed(1); // 始終保留1位小數
-    }
-    function gToFlOzMilk(g) {
-      let val = Math.floor((Math.abs(g) * 22446 + 32768) / 65535);
-      return (val / 10).toFixed(1); // 始終保留1位小數
-    }
-
-    // 儲存上一次ml類型（'ml(water)' 或 'ml(milk)'）
-    let lastMlType = null;
-
-    // 3. showWeightOnDotMatrix自動ml/L顯示，L不再作為單獨單位循環
-    function showWeightOnDotMatrix(weight) {
-      if (checkOverload(weight)) return;
-      let showValue = '', showUnit = '';
-      const cur = units[currentUnitIndex];
-      const isNegative = weight < 0;
-      if (cur.label === 'g') {
-        if (Math.abs(weight) >= 1000) {
-          showValue = (Math.abs(weight) / 1000).toFixed(3);
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'kg';
-          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
-          const g = svgDoc && svgDoc.getElementById('_单位g');
-          const k = svgDoc && svgDoc.getElementById('_单位k');
-          if (kgGroup) kgGroup.style.display = '';
-          if (g) g.style.display = '';
-          if (k) k.style.display = '';
-          showNumberPattern(showValue, true);
-        } else {
-          showValue = Math.round(Math.abs(weight)).toString();
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'g';
-          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
-          const g = svgDoc && svgDoc.getElementById('_单位g');
-          const k = svgDoc && svgDoc.getElementById('_单位k');
-          if (kgGroup) kgGroup.style.display = '';
-          if (g) g.style.display = '';
-          if (k) k.style.display = 'none';
-          showNumberPattern(showValue, false);
-        }
-      } else if (cur.label === 'ml(water)') {
-        const mlValue = gToMlWater(weight) * (weight < 0 ? -1 : 1);
-        const ml = svgDoc && svgDoc.getElementById('_单位ml');
-        const l = svgDoc && svgDoc.getElementById('_单位L');
-        const water = svgDoc && svgDoc.getElementById('_单位water');
-        const milk = svgDoc && svgDoc.getElementById('_单位milk');
-        lastMlType = 'ml(water)';
-        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
-          // 顯示L+water
-          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'L';
-          if (ml) ml.style.display = 'none';
-          if (l) l.style.display = '';
-          if (water) water.style.display = '';
-          if (milk) milk.style.display = 'none';
-          showNumberPattern(showValue, true);
-        } else {
-          // 顯示ml+water
-          showValue = Math.round(Math.abs(mlValue)).toString();
-          if (isNegative) showValue = '-' + showValue;
-        showUnit = 'ml';
-          if (ml) ml.style.display = '';
-          if (l) l.style.display = 'none';
-          if (water) water.style.display = '';
-          if (milk) milk.style.display = 'none';
-          showNumberPattern(showValue, false);
-        }
-      } else if (cur.label === 'ml(milk)') {
-        const mlValue = gToMlMilk(weight) * (weight < 0 ? -1 : 1);
-        const ml = svgDoc && svgDoc.getElementById('_单位ml');
-        const l = svgDoc && svgDoc.getElementById('_单位L');
-        const water = svgDoc && svgDoc.getElementById('_单位water');
-        const milk = svgDoc && svgDoc.getElementById('_单位milk');
-        lastMlType = 'ml(milk)';
-        if (Math.abs(mlValue) >= 1000 && Math.abs(mlValue) !== 0) {
-          // 顯示L+milk
-          showValue = (Math.abs(mlValue) / 1000).toFixed(3);
-          if (isNegative) showValue = '-' + showValue;
-          showUnit = 'L';
-          if (ml) ml.style.display = 'none';
-          if (l) l.style.display = '';
-          if (milk) milk.style.display = '';
-          if (water) water.style.display = 'none';
-          showNumberPattern(showValue, true);
-        } else {
-          // 顯示ml+milk
-          showValue = Math.round(Math.abs(mlValue)).toString();
-          if (isNegative) showValue = '-' + showValue;
-        showUnit = 'ml';
-          if (ml) ml.style.display = '';
-          if (l) l.style.display = 'none';
-          if (milk) milk.style.display = '';
-          if (water) water.style.display = 'none';
-          showNumberPattern(showValue, false);
-        }
-      } else if (cur.label === 'oz') {
-        showValue = gToOz(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = 'oz';
-        showNumberPattern(showValue.toString(), showValue.includes('.'));
-      } else if (cur.label === 'lb:oz') {
-        const { lb, oz } = gToLbOz(weight);
-        showValue = `${lb}:${oz}`;
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = 'lb:oz';
-        showNumberPattern(showValue, String(oz).includes('.'));
-      } else if (cur.label === 'lb') {
-        showValue = gToLb(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = 'lb';
-        showNumberPattern(showValue.toString(), showValue.includes('.'));
-      } else if (cur.label === "fl'oz(water)") {
-        showValue = gToFlOzWater(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = "fl'oz";
-        showNumberPattern(showValue.toString(), showValue.includes('.'));
-      } else if (cur.label === "fl'oz(milk)") {
-        showValue = gToFlOzMilk(weight);
-        if (isNegative) showValue = '-' + showValue;
-        showUnit = "fl'oz";
-        showNumberPattern(showValue.toString(), showValue.includes('.'));
-      }
-      if (isTareActive) {
-        weight -= tareWeight;
-        if (tareIcon) tareIcon.style.display = '';
-      } else {
-        if (tareIcon) tareIcon.style.display = 'none';
       }
     }
 
@@ -2013,7 +1714,17 @@
       const cur = units[currentUnitIndex];
       const isNegative = weight < 0;
       if (cur.label === 'g') {
-        if (Math.abs(weight) >= 1000) {
+        if (Math.abs(weight) < 3) {
+          showValue = '0';
+          showUnit = 'g';
+          const kgGroup = svgDoc && svgDoc.getElementById('_单位kg');
+          const g = svgDoc && svgDoc.getElementById('_单位g');
+          const k = svgDoc && svgDoc.getElementById('_单位k');
+          if (kgGroup) kgGroup.style.display = '';
+          if (g) g.style.display = '';
+          if (k) k.style.display = 'none';
+          showNumberPattern('0', false);
+        } else if (Math.abs(weight) >= 1000) {
           showValue = (Math.abs(weight) / 1000).toFixed(3);
           if (isNegative) showValue = '-' + showValue;
           showUnit = 'kg';
@@ -2122,6 +1833,67 @@
         if (tareIcon) tareIcon.style.display = 'none';
       }
     }
+
+    // 单位换算函数
+    function gToMlWater(g) {
+      return Math.round(Math.abs(g));
+    }
+    function gToMlMilk(g) {
+      return Math.round(Math.abs(g) * 63634 / 65535);
+    }
+    function gToOz(g) {
+      // 1g = 0.035273962oz，MCU用35274/1000000
+      let raw = Math.abs(g) * 35274 / 1000000;
+      // 取小數第2位
+      let intPart = Math.floor(raw);
+      let d2 = Math.floor(raw * 100) % 10; // 小數第2位
+      let d3 = Math.floor(raw * 1000) % 10; // 小數第3位
+      let oz;
+      if (d2 <= 2) {
+        // 二舍三入
+        oz = Math.floor(raw * 10) / 10;
+      } else if (d2 >= 8) {
+        // 七舍八入
+        oz = Math.ceil(raw * 10) / 10;
+      } else {
+        // 其它情況，四捨五入到0.05
+        oz = Math.round(raw * 20) / 20;
+      }
+      return oz.toFixed(2); // 保留兩位小數，不去0
+    }
+    function gToLbOz(g) {
+      let totalOz = Math.abs(g) * 35274 / 1000000;
+      let lb = Math.floor(totalOz / 16);
+      let oz = totalOz - lb * 16;
+      oz = Math.round(oz * 10) / 10; // 只保留1位小數
+      if (oz >= 16) { lb += 1; oz = 0; }
+      // 格式化oz為兩位整數+小數點+一位小數
+      let ozInt = Math.floor(oz);
+      let ozDec = Math.round((oz - ozInt) * 10);
+      let ozStr = `${ozInt}`.padStart(2, '0') + '.' + ozDec;
+      return { lb, oz: ozStr };
+    }
+    function gToLb(g) {
+      // MCU算法：lb = (g * 22046) / 10000
+      let lb = Math.abs(g) * 22046 / 10000;
+      lb = Math.round(lb * 1000) / 1000 / 1000;
+      return lb.toFixed(2); // 保留兩位小數
+    }
+    function gToL(g) {
+      // 1L = 1000g，直接除以1000
+      return (Math.abs(g) / 1000).toFixed(2);
+    }
+    function gToFlOzWater(g) {
+      let val = Math.floor((Math.abs(g) * 23117 + 32768) / 65535);
+      return (val / 10).toFixed(1); // 始終保留1位小數
+    }
+    function gToFlOzMilk(g) {
+      let val = Math.floor((Math.abs(g) * 22446 + 32768) / 65535);
+      return (val / 10).toFixed(1); // 始終保留1位小數
+    }
+
+    // 儲存上一次ml類型（'ml(water)' 或 'ml(milk)'）
+    let lastMlType = null;
 
     // 开机不稳点阵图案（14x35，显示UNST）
     const unstablePattern = [
